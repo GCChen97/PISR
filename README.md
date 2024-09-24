@@ -1,4 +1,4 @@
-# 🍕PISR: Polarimetric Neural Implicit Surface Reconstruction<br>for Textureless and Specular Objects
+# 🍕PISR: Polarimetric Neural Implicit<br>Surface Reconstruction<br>for Textureless and Specular Objects
 [[arxiv](https://arxiv.org/abs/2409.14331)]
 [[dataset](https://drive.google.com/drive/folders/1ih4p91t8hYgPLFZ1hA9lF3rLN_6wHKfx?usp=drive_link)]
 
