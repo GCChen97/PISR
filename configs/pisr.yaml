@@ -1,0 +1,215 @@
+name: ${basename:${dataset.root_dir}}
+tag: ''
+seed: 2024
+desc: ''
+
+checkpoint:
+  save_top_k: -1
+  every_n_train_steps: 5000
+
+trainer:
+  max_steps: 20000
+  log_every_n_steps: 100
+  num_sanity_val_steps: 0
+  val_check_interval: 500000000
+  limit_train_batches: 1.0
+  limit_val_batches: 1
+  enable_progress_bar: true 
+  precision: 32
+
+pol:
+  train:
+
+    lambda_intensity_l1: 1.0 # 0.01 leads to no meshes
+
+    lambda_pol: -1
+    loss_pa_ppa: true
+    loss_pa_type: 'cos'
+    loss_pa_normalize: true
+
+    size_kernel: 1
+    step_kernel: 3
+
+    lambda_smooth: -1
+
+  val:
+    export_freq: 5000
+
+dataset:
+  name: pol-dtu
+  root_dir: /media/gccrcv/Data/Datasets/GCC/loong1
+  cameras_file: cameras_sphere.npz
+  img_downscale: 1 # specify training image size by either img_wh or img_downscale
+  n_test_traj_steps: 180 #180
+  apply_mask: false
+
+  has_raw: true
+  has_mask: false
+  has_normal: false # diff
+  has_depth: false
+  img_hw: [1024, 1224]
+  # Choose images for experiments on number of views. Leave non-positive for all images.
+  num_used_images: -1
+
+  scale_factor: 1.0
+  camera_distance: 1.3
+
+model:
+  name: neus
+  radius: 1.0
+  num_samples_per_ray: 1024
+  train_num_rays: 2048
+  max_train_num_rays: 16384
+  grid_prune: true
+  grid_prune_occ_thre: 0.001
+  dynamic_ray_sampling: true
+  batch_image_sampling: true
+  randomized: true
+  ray_chunk: 2048
+  cos_anneal_end: 20000
+  learned_background: true
+  background_color: random
+  variance:
+    init_val: 0.3
+    modulate: false  
+  geometry:
+    name: volume-sdf
+    radius: ${model.radius}
+    feature_dim: 13
+
+    finite_difference_eps: progressive
+    finite_difference_stop_step: 1e10
+
+    grad_type: analytic
+    isosurface:
+      method: mc
+      resolution: 256
+      chunk: 2097152
+      threshold: 0.
+
+    xyz_encoding_config:
+      otype: ProgressiveBandHashGrid
+      n_levels: 16
+      n_features_per_level: 2
+      log2_hashmap_size: 19
+      base_resolution: 32 # 16
+      per_level_scale: 1.3195079107728942 # 1.447269237440378
+      include_xyz: true
+      start_level: 4
+      start_step: 0
+      update_steps: 1000
+
+    mlp_network_config:
+      otype: VanillaMLP
+      activation: ReLU
+      output_activation: none
+      n_neurons: 64
+      n_hidden_layers: 1 #1
+      sphere_init: true
+      sphere_init_radius: 0.5
+      weight_norm: true
+  texture:
+    name: volume-radiance
+    input_feature_dim: ${add:${model.geometry.feature_dim},3} # surface normal as additional input
+    dir_encoding_config:
+      otype: SphericalHarmonics
+      degree: 4    
+    mlp_network_config:
+      otype: FullyFusedMLP
+      activation: ReLU
+      output_activation: none
+      n_neurons: 64
+      n_hidden_layers: 2
+    color_activation: sigmoid
+  # background model configurations
+  num_samples_per_ray_bg: 64
+  geometry_bg:
+    name: volume-density
+    radius: ${model.radius}
+    feature_dim: 8
+    density_activation: trunc_exp
+    density_bias: -1
+    isosurface: null
+    xyz_encoding_config:
+      otype: ProgressiveBandHashGrid # coarse-to-fine
+      n_levels: 16
+      n_features_per_level: 2
+      log2_hashmap_size: 19
+      base_resolution: 16
+      per_level_scale: 1.447269237440378  
+      # start from start_step and start_level, increase feature level by 1 very update_steps steps
+      start_level: 1
+      update_steps: 500
+      start_step: 0
+    mlp_network_config:
+      otype: FullyFusedMLP
+      activation: ReLU
+      output_activation: none
+      n_neurons: 64
+      n_hidden_layers: 1
+  texture_bg:
+    name: volume-radiance
+    input_feature_dim: ${model.geometry_bg.feature_dim}
+    dir_encoding_config:
+      otype: SphericalHarmonics
+      degree: 4    
+    mlp_network_config:
+      otype: FullyFusedMLP
+      activation: ReLU
+      output_activation: none
+      n_neurons: 64
+      n_hidden_layers: 2  
+    color_activation: sigmoid
+
+system:
+  name: pol-neus-system
+  loss:
+    lambda_rgb_mse: 0.
+    lambda_rgb_l1: 1.0
+    lambda_mask: 0.
+    lambda_eikonal: 0.1
+    lambda_curvature: -1
+    lambda_sparsity: 0.0
+    lambda_distortion: 0.0
+    lambda_distortion_bg: 0.0
+    lambda_opaque: 0 #0.01
+    sparsity_scale: 1.
+  optimizer:
+    name: Adam
+    args:
+      lr: 0.01
+      betas: [0.9, 0.99]
+      eps: 1.e-15
+    params:
+      geometry:
+        lr: 0.01
+      texture:
+        lr: 0.01
+      geometry_bg:
+        lr: 0.01
+      texture_bg:
+        lr: 0.01
+      variance:
+        lr: 0.001
+  warmup_steps: 500
+  scheduler:
+    name: SequentialLR
+    interval: step
+    milestones:
+      - ${system.warmup_steps}
+
+    schedulers:
+      - name: LinearLR # linear warm-up in the first system.warmup_steps steps
+        args:
+          start_factor: 0.01
+          end_factor: 1.0
+          total_iters: ${system.warmup_steps}
+      - name: ExponentialLR
+        args:
+          gamma: ${calc_exp_lr_decay_rate:0.1,${sub:${trainer.max_steps},${system.warmup_steps}}}
+
+export: 
+  chunk_size: 2097152
+  export_vertex_color: True
+  export_mc_range: 0.6
+
